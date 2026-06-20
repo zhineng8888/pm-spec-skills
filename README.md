@@ -7,7 +7,7 @@
 ### 方式一：命令行安装
 
 ```bash
-npx skills add zhineng8888/pm-spec-skills --all
+npx skills add dae8888/pm-spec-skills --all
 ```
 
 ### 方式二：手动安装（任意 AI 编辑器）
