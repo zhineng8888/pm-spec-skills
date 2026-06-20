@@ -17,12 +17,12 @@ npx skills add dae8888/pm-spec-skills --all
 1. 克隆或下载本仓库
 2. 将技能文件夹复制到你项目的 AI 技能目录中：
    ```
-   pm-spec-doc-mode/SKILL.md      ← 悬浮球文档模式
-   pm-spec-doc-mode/scripts/doc-mode.js  ← 配套 JS 引擎
-   pm-spec-page/SKILL.md           ← 页面说明规范
-   pm-spec-page-check/SKILL.md     ← 页面检查
-   pm-spec-summary/SKILL.md        ← 总说明生成
-   pm-spec-summary-check/SKILL.md  ← 总说明检查
+   悬浮球文档模式/SKILL.md      ← 悬浮球文档模式
+   悬浮球文档模式/scripts/doc-mode.js  ← 配套 JS 引擎
+   页面说明技能/SKILL.md           ← 页面说明规范
+   页面说明检查技能/SKILL.md     ← 页面检查
+   总说明技能/SKILL.md        ← 总说明生成
+   总说明检查技能/SKILL.md  ← 总说明检查
    ```
 3. 不同编辑器的技能目录不同，常见的有：
    - `.qoder/skills/`、`.claude/skills/`、`.cursor/skills/`
@@ -31,28 +31,28 @@ npx skills add dae8888/pm-spec-skills --all
 
 ## 技能列表
 
-| 技能 | name | 用途 | 触发词 |
-|------|------|------|--------|
-| 悬浮球文档模式 | `pm-spec-doc-mode` | 给 HTML 原型页面注入文档模式系统（悬浮按钮 + 标注 + 页面说明） | 「给页面加文档模式」「注入悬浮球」 |
-| 页面说明技能 | `pm-spec-page` | 编写页面 MD 规格文档的标准规范（章节结构、标注引用、格式约束） | 编写页面说明时自动触发 |
-| 页面说明检查技能 | `pm-spec-page-check` | 对页面说明 MD 进行 10 维度质量检查（含 HTML-MD 联动检查） | 「页面检查」「检查页面文档」 |
-| 总说明技能 | `pm-spec-summary` | 从各页面文档提取跨页面共性信息，生成产品总说明 | 「生成产品总说明」「串一下文档」 |
-| 总说明检查技能 | `pm-spec-summary-check` | 对总说明进行 8 维度交叉验证检查 | 「检查总说明」「检查总纲」 |
+| 技能 | 用途 | 触发词 |
+|------|------|--------|
+| 悬浮球文档模式 | 给 HTML 原型页面注入文档模式系统（悬浮按钮 + 标注 + 页面说明） | 「给页面加文档模式」「注入悬浮球」 |
+| 页面说明技能 | 编写页面 MD 规格文档的标准规范（章节结构、标注引用、格式约束） | 编写页面说明时自动触发 |
+| 页面说明检查技能 | 对页面说明 MD 进行 10 维度质量检查（含 HTML-MD 联动检查） | 「页面检查」「检查页面文档」 |
+| 总说明技能 | 从各页面文档提取跨页面共性信息，生成产品总说明 | 「生成产品总说明」「串一下文档」 |
+| 总说明检查技能 | 对总说明进行 8 维度交叉验证检查 | 「检查总说明」「检查总纲」 |
 
 ## 技能依赖关系
 
 ```
-pm-spec-page（页面说明编写规范）
-    ├── pm-spec-page-check（页面检查，依赖页面说明规范）
-    ├── pm-spec-summary（总说明生成，依赖各页面文档）
-    └── pm-spec-summary-check（总说明检查，依赖页面说明规范 + 各页面文档）
+页面说明技能（页面说明编写规范）
+    ├── 页面说明检查技能（页面检查，依赖页面说明规范）
+    ├── 总说明技能（总说明生成，依赖各页面文档）
+    └── 总说明检查技能（总说明检查，依赖页面说明规范 + 各页面文档）
 
-pm-spec-doc-mode（悬浮球文档模式，独立技能，无依赖）
+悬浮球文档模式（独立技能，无依赖）
 ```
 
-## pm-spec-doc-mode 引擎文件
+## 悬浮球文档模式引擎文件
 
-`pm-spec-doc-mode/scripts/doc-mode.js` 是文档模式的完整 JS 引擎代码。部署时：
+`悬浮球文档模式/scripts/doc-mode.js` 是文档模式的完整 JS 引擎代码。部署时：
 
 1. 将 `scripts/doc-mode.js` 复制到目标项目的 `shared/doc-mode.js`
 2. 在目标 HTML 的 `</body>` 前注入引用：
@@ -65,17 +65,17 @@ pm-spec-doc-mode（悬浮球文档模式，独立技能，无依赖）
 
 ```
 pm-spec-skills/
-├── pm-spec-doc-mode/
+├── 悬浮球文档模式/
 │   ├── SKILL.md              # 悬浮球文档模式技能定义
 │   └── scripts/
 │       └── doc-mode.js       # 文档模式 JS 引擎（2198行）
-├── pm-spec-page/
+├── 页面说明技能/
 │   └── SKILL.md              # 页面说明编写规范
-├── pm-spec-page-check/
+├── 页面说明检查技能/
 │   └── SKILL.md              # 页面说明质量检查（10维度）
-├── pm-spec-summary/
+├── 总说明技能/
 │   └── SKILL.md              # 产品总说明生成
-├── pm-spec-summary-check/
+├── 总说明检查技能/
 │   └── SKILL.md              # 总说明交叉验证检查（8维度）
 └── README.md
 ```

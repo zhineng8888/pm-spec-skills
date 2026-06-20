@@ -1,5 +1,5 @@
 ---
-name: pm-spec-doc-mode
+name: 悬浮球文档模式
 version: "0.3.0"
 description: 给HTML原型页面注入文档模式系统（悬浮按钮 + iframe预览 + 标注编辑 + 智能Tab + 移动端适配）。支持弹窗/视图/Tab三级上下文自动检测、Tab动态显隐、手机端页面自动50%布局。PC端和APP端通用。触发词：给页面加文档模式、注入悬浮球。
 ---
