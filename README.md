@@ -4,6 +4,8 @@
 
 ## 安装
 
+### 方式一：命令行安装（支持的编辑器）
+
 ```bash
 # 安装全部 5 个技能（-a 指定你的 AI 编辑器）
 npx skills add zhineng8888/pm-spec-skills -a qoder      # Qoder
@@ -18,7 +20,24 @@ npx skills add zhineng8888/pm-spec-skills --skill pm-spec-page --skill pm-spec-p
 npx skills add zhineng8888/pm-spec-skills -g -a qoder
 ```
 
-`-a` 后面的值取决于你使用的 AI 编辑器。安装后技能文件位于对应编辑器的 skills 目录下，打开项目时自动加载。
+### 方式二：手动安装（任意 AI 编辑器）
+
+技能文件就是普通的 Markdown，**任何支持 AI 指令/技能的编辑器都能使用**（Workbuddy、Trae、Cline 等）：
+
+1. 克隆或下载本仓库
+2. 将技能文件夹复制到你项目的 AI 技能目录中：
+   ```
+   pm-spec-doc-mode/SKILL.md      ← 悬浮球文档模式
+   pm-spec-doc-mode/scripts/doc-mode.js  ← 配套 JS 引擎
+   pm-spec-page/SKILL.md           ← 页面说明规范
+   pm-spec-page-check/SKILL.md     ← 页面检查
+   pm-spec-summary/SKILL.md        ← 总说明生成
+   pm-spec-summary-check/SKILL.md  ← 总说明检查
+   ```
+3. 不同编辑器的技能目录不同，常见的有：
+   - `.qoder/skills/`、`.claude/skills/`、`.cursor/skills/`
+   - 或直接在项目根目录放一个 `Skills/` 文件夹
+   - 具体路径请参考你所用编辑器的文档
 
 ## 技能列表
 
