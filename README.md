@@ -7,22 +7,7 @@
 ### 方式一：命令行安装
 
 ```bash
-# 安装全部 5 个技能，到所有已安装的 AI 编辑器（推荐）
-npx skills add zhineng8888/pm-spec-skills -a '*'
-
-# 或一行搞定：所有技能 + 所有编辑器 + 跳过确认
 npx skills add zhineng8888/pm-spec-skills --all
-
-# 指定某个编辑器
-npx skills add zhineng8888/pm-spec-skills -a qoder      # Qoder
-npx skills add zhineng8888/pm-spec-skills -a claude       # Claude Code
-npx skills add zhineng8888/pm-spec-skills -a cursor        # Cursor
-
-# 只安装某几个技能
-npx skills add zhineng8888/pm-spec-skills --skill pm-spec-page --skill pm-spec-page-check -a '*'
-
-# 全局安装（所有项目可用）
-npx skills add zhineng8888/pm-spec-skills -g -a '*'
 ```
 
 ### 方式二：手动安装（任意 AI 编辑器）
