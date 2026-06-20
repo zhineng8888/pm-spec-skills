@@ -5,8 +5,11 @@
 ## 安装
 
 ```bash
-# 安装全部 5 个技能
-npx skills add zhineng8888/pm-spec-skills -a qoder
+# 安装全部 5 个技能（-a 指定你的 AI 编辑器）
+npx skills add zhineng8888/pm-spec-skills -a qoder      # Qoder
+npx skills add zhineng8888/pm-spec-skills -a claude       # Claude Code
+npx skills add zhineng8888/pm-spec-skills -a cursor        # Cursor
+npx skills add zhineng8888/pm-spec-skills -a windsurf     # Windsurf
 
 # 只安装某几个技能
 npx skills add zhineng8888/pm-spec-skills --skill pm-spec-page --skill pm-spec-page-check -a qoder
@@ -15,7 +18,7 @@ npx skills add zhineng8888/pm-spec-skills --skill pm-spec-page --skill pm-spec-p
 npx skills add zhineng8888/pm-spec-skills -g -a qoder
 ```
 
-安装后技能文件位于 `.qoder/skills/` 目录下，Qoder 打开项目时自动加载。
+`-a` 后面的值取决于你使用的 AI 编辑器。安装后技能文件位于对应编辑器的 skills 目录下，打开项目时自动加载。
 
 ## 技能列表
 
