@@ -16,13 +16,16 @@ description: 给HTML原型页面注入文档模式系统（悬浮按钮 + iframe
 ## 注入方式
 
 所有页面共享同一个文件 `shared/doc-mode.js`，包含完整的 CSS 和 JS 逻辑。  
-在每个 HTML 文件的 `</body>` 标签前加一行引用即可：
+在每个 HTML 文件的 `</body>` 标签前加两行：
 
 ```html
 <!-- ======PROD_IGNORE_START 文档模式系统 ====== -->
+<script>window._dm_md_file = '页面名.md';</script>
 <script src="../shared/doc-mode.js?v=3"></script>
 <!-- ======PROD_IGNORE_END====== -->
 ```
+
+**`window._dm_md_file` 必须在 `<script src>` 之前声明**，告诉引擎加载哪个 MD 文件。如果省略，引擎会尝试从 URL 自动猜测文件名，可能找不到或找错。
 
 **标注数据以 `[页面名]标注.json` 文件形式存放在 HTML 所在目录。标注引用直接写在页面说明 MD 中，用 `*（标注N）*` 格式。**
 
@@ -312,10 +315,11 @@ HTML 引用 `doc-mode.js` 时应加版本号参数，避免浏览器缓存旧版
 
 ### 第 2 步：HTML 中注入脚本
 
-在页面 `</body>` 前加引用（路径根据 `shared/` 实际位置调整）：
+在页面 `</body>` 前加两行（**`_dm_md_file` 必须在 `src` 之前**）：
 
 ```html
 <!-- ======PROD_IGNORE_START 文档模式系统====== -->
+<script>window._dm_md_file = '页面名.md';</script>
 <script src="../shared/doc-mode.js?v=3"></script>
 <!-- ======PROD_IGNORE_END====== -->
 ```

@@ -1,6 +1,6 @@
 /**
  * ═══════════════════════════════════════════════════════════
- *  PM Spec - 统一文档模式系统  (doc-mode.js)
+ *  喜来客 - 统一文档模式系统  (doc-mode.js)
  *  ═══════════════════════════════════════════════════════════
  *
  *  两种模式:
@@ -11,7 +11,7 @@
  *    - 编辑时数据存 localStorage（即时生效）
  *    - 点击「完成」→ 自动下载 [页面名].annotations.json 到浏览器
  *    - 将下载的文件保存到 HTML 所在目录即可
- *    - 页面加载优先 fetch 同目录 .annotations.json（始终最新），回退读 localStorage
+ *    - 页面加载优先读 localStorage，回退读同目录 .annotations.json
  *
  *  用法: <script src="../shared/doc-mode.js"></script>
  *
@@ -26,6 +26,7 @@
   var MODE = 'browse';
   var annotations = [];
   var annotateNextId = 1;
+  var _dm_uid_counter = 0;  // 内部唯一标识计数器，不随编号修改变化
   var hoverHighlightEl = null;  // hover 高亮元素
   var hoverElement = null;     // 当前 hover 的 DOM 元素
   var activeContext = 'main';  // 当前活跃的标注上下文（main / modal的ID）
@@ -40,13 +41,23 @@
   var mdContent = '';
   var pageIframe = null;
   var iframeReady = false;
-  var annoDescriptions = {};    // 标注说明：{ 1: "文字", 2: "文字" }
   var annoSnapshot = null;     // 进入编辑前的标注快照
-  var _docHidden = false;      // 悬浮按钮关闭标志
+  
+  var _mdFileExists = false;      // 页面说明MD文件是否存在
+  var _repaintTimer = null;      // 兜底定时器：定时刷新标注可见性
+  var _dm_multiDocs = null;     // 多文档配置数组 [{name, file}]
+  var _dm_activeDocIdx = -1;    // 当前激活的文档索引（多文档模式）
 
   (function(){
-    var pageName = location.pathname.split('/').pop().replace('.html','');
-    currentPageMd = pageName + '.md';
+    if (window._dm_md_files && Array.isArray(window._dm_md_files) && window._dm_md_files.length > 0) {
+      _dm_multiDocs = window._dm_md_files;
+      currentPageMd = _dm_multiDocs[0].file;
+    } else if (window._dm_md_file) {
+      currentPageMd = window._dm_md_file;
+    } else {
+      var pageName = location.pathname.split('/').pop().replace('.html','');
+      currentPageMd = pageName + '.md';
+    }
   })();
 
   // ═══════════════════════════════════════════════
@@ -56,65 +67,14 @@
     return 'dm_anno_' + location.pathname;
   }
 
-  /** 获取标注说明MD文件名：页面名标注.md */
-  function getAnnoDescFileName() {
-    var decoded = decodeURIComponent(location.pathname);
-    var pageName = decoded.split('/').pop().replace('.html', '');
-    return pageName + '标注.md';
-  }
-
-  /** 从同目录的 [页面名]标注.md 加载标注说明文字 */
-  function loadAnnoDescriptions(callback) {
-    try {
-      var url = getAnnoDescFileName();
-      fetch(url + '?v=' + Date.now(), { cache: 'no-store' })
-        .then(function(r) { if (!r.ok) throw new Error('not found'); return r.text(); })
-        .then(function(md) {
-          /******************************************
-           *  解析标注说明文档
-           *  支持格式：
-           *    ### 1 或 ### 标注1 或 ### 标注一
-           *    ### 2 或 ### 标注2 或 ### 标注二
-           *  推荐写法：### 标注1说明
-           ******************************************/
-          var cnNum = { '一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10 };
-          var result = {};
-          var sections = md.split(/^### /gm);
-          for (var i = 1; i < sections.length; i++) {
-            var lines = sections[i].split('\n');
-            var head = lines[0].trim();
-            var num = null;
-            // 优先匹配 "标注1" 或 "标注一" 后缀
-            var m = head.match(/标注(\d+|[一二三四五六七八九十]+)/);
-            if (m) {
-              num = parseInt(m[1]);
-              if (isNaN(num)) num = cnNum[m[1]];
-            }
-            // 兼容纯数字标题 "### 1"
-            if (num === null || isNaN(num)) {
-              num = parseInt(head);
-              if (isNaN(num)) num = null;
-            }
-            if (num !== null && !isNaN(num) && lines.length > 1) {
-              var text = lines.slice(1).join('\n').trim();
-              if (text) result[num] = text;
-            }
-          }
-          annoDescriptions = result;
-          callback();
-        })
-        .catch(function() { annoDescriptions = {}; callback(); });
-    } catch(e) { annoDescriptions = {}; callback(); }
-  }
-
-  /** 获取 iframe 内容区尺寸（用于百分比计算） */
+  /** 获取 iframe 视口尺寸（position:fixed 坐标系） */
   function getBodyDim() {
     if (!pageIframe || !pageIframe.contentDocument) return { w: 1, h: 1, scrollY: 0 };
     var doc = pageIframe.contentDocument;
-    var w = doc.documentElement.scrollWidth || doc.body.scrollWidth || 1;
-    var h = doc.documentElement.scrollHeight || doc.body.scrollHeight || 1;
-    var sy = pageIframe.contentWindow.scrollY || 0;
-    return { w: w, h: h, scrollY: sy };
+    var win = pageIframe.contentWindow;
+    var w = win.innerWidth || doc.documentElement.clientWidth || 1;
+    var h = win.innerHeight || doc.documentElement.clientHeight || 1;
+    return { w: w, h: h, scrollY: 0 };
   }
 
   /** 将百分比标注数据转为当前像素值 */
@@ -343,24 +303,22 @@
     if (!pageIframe || !pageIframe.contentDocument || !pageIframe.contentWindow) return null;
     var doc = pageIframe.contentDocument;
     var win = pageIframe.contentWindow;
-    var scrollY = win.scrollY || 0;
 
-    // 框中心点（body坐标 → viewport坐标）
+    // 框中心点（已是视口坐标，无需转换）
     var cx = boxX + boxW / 2;
     var cy = boxY + boxH / 2;
-    var vpY = cy - scrollY;
 
     var el = withoutDmElements(doc, function() {
-      return doc.elementFromPoint(cx, vpY);
+      return doc.elementFromPoint(cx, cy);
     });
 
     // 如果框在视口外，临时滚动到该位置再取元素
-    if (!el && cy > scrollY + win.innerHeight) {
-      var savedScroll = scrollY;
+    if (!el && cy > win.innerHeight) {
+      var savedScroll = win.scrollY || 0;
       win.scrollTo(0, cy - win.innerHeight / 2);
-      vpY = cy - (win.scrollY || 0);
+      var newScrollY = win.scrollY || 0;
       el = withoutDmElements(doc, function() {
-        return doc.elementFromPoint(cx, Math.max(0, vpY));
+        return doc.elementFromPoint(cx, Math.max(0, cy - newScrollY));
       });
       win.scrollTo(0, savedScroll);
     }
@@ -369,7 +327,8 @@
     // 向上找到有意义的容器元素（加入 TD/TH/TR/LI）
     var meaningfulTags = { 
       TD:1, TH:1, TR:1, LI:1,
-      SECTION:1, TABLE:1, FORM:1, ARTICLE:1, MAIN:1, NAV:1, ASIDE:1, HEADER:1, FOOTER:1, DIV:1 
+      SECTION:1, TABLE:1, FORM:1, ARTICLE:1, MAIN:1, NAV:1, ASIDE:1, HEADER:1, FOOTER:1, DIV:1,
+      SPAN:1, BUTTON:1, A:1, INPUT:1, SELECT:1, TEXTAREA:1, P:1, LABEL:1, H1:1, H2:1, H3:1, H4:1, H5:1, H6:1
     };
     var candidate = el;
     while (candidate && candidate !== doc.body && candidate !== doc.documentElement) {
@@ -397,17 +356,33 @@
     return { el: anchor, xpath: xpath, keyTexts: keyTexts };
   }
 
+  /** 直接从 target 元素设置锚点（避免 elementFromPoint 查找偏差） */
+  function setAnchorOnTarget(a, target, boxX, boxY, boxW, boxH, doc) {
+    var xpath = generateXPath(target, doc);
+    if (!xpath) { updatePct(a); return; }
+    var rect = target.getBoundingClientRect();
+    var keyTexts = extractKeyTexts(target, boxX, boxY, boxW, boxH, doc);
+    a.xpath = xpath;
+    a.keyTexts = keyTexts;
+    a.anchorOffsetX = boxX - rect.left;
+    a.anchorOffsetY = boxY - rect.top;
+    a.anchorW = rect.width;
+    a.anchorH = rect.height;
+    a.scaleW = (rect.width > 0) ? boxW / rect.width : 1;
+    a.scaleH = (rect.height > 0) ? boxH / rect.height : 1;
+    updatePct(a);
+  }
+
   /** 设置标注的锚点数据 */
   function setAnchorOnAnnotation(a, boxX, boxY, boxW, boxH) {
     if (!pageIframe || !pageIframe.contentWindow) { updatePct(a); return; }
     var result = findAnchorInIframe(boxX, boxY, boxW, boxH);
     if (result) {
-      var scrollY = pageIframe.contentWindow.scrollY || 0;
       var rect = result.el.getBoundingClientRect();
       a.xpath = result.xpath;
       a.keyTexts = result.keyTexts;
       a.anchorOffsetX = boxX - rect.left;
-      a.anchorOffsetY = boxY - (rect.top + scrollY);
+      a.anchorOffsetY = boxY - rect.top;
       // 记录锚点原始尺寸，用于缩放时等比缩放
       a.anchorW = rect.width;
       a.anchorH = rect.height;
@@ -443,7 +418,6 @@
             }
             check = check.parentElement;
           }
-          var scrollY = pageIframe.contentWindow.scrollY || 0;
           var rect = el.getBoundingClientRect();
           // 计算缩放比例（锚点元素尺寸相对原始尺寸的变化）
           var scaleX = (a.anchorW && a.anchorW > 0) ? rect.width / a.anchorW : 1;
@@ -451,9 +425,10 @@
           // 宽高 = 锚点当前尺寸 × 框与锚点的原始比例（等比跟随锚点）
           var boxScaleW = (a.scaleW !== undefined) ? a.scaleW : 1;
           var boxScaleH = (a.scaleH !== undefined) ? a.scaleH : 1;
+          // position:fixed 坐标系：直接用视口坐标，不加 scrollY
           return {
             x: rect.left + (a.anchorOffsetX || 0) * scaleX,
-            y: rect.top + scrollY + (a.anchorOffsetY || 0) * scaleY,
+            y: rect.top + (a.anchorOffsetY || 0) * scaleY,
             w: rect.width * boxScaleW,
             h: rect.height * boxScaleH
           };
@@ -471,10 +446,9 @@
     try {
       var el = queryByAnchor(a, pageIframe.contentDocument);
       if (el) {
-        var scrollY = pageIframe.contentWindow.scrollY || 0;
         var rect = el.getBoundingClientRect();
         a.anchorOffsetX = boxX - rect.left;
-        a.anchorOffsetY = boxY - (rect.top + scrollY);
+        a.anchorOffsetY = boxY - rect.top;
         a.anchorW = rect.width;
         a.anchorH = rect.height;
         // 更新框与锚点的比例（用户可能拉伸了框）
@@ -524,6 +498,27 @@
     } catch(e) {}
   }
 
+ /** 标注数据迁移：xpath 中提到 view 容器但 context 为 main → 升级 context */
+  function migrateAnnotations(arr) {
+    var viewIds = ['unboundView', 'boundView'];
+    arr.forEach(function(a) {
+      if (a.context === 'main' && a.xpath) {
+        for (var vi = 0; vi < viewIds.length; vi++) {
+          if (a.xpath.indexOf(viewIds[vi]) >= 0) {
+            a.context = viewIds[vi];
+            break;
+          }
+        }
+      }
+    });
+    var maxId = 0;
+    arr.forEach(function(a) {
+      assignUid(a);
+      if (a.id > maxId) maxId = a.id;
+    });
+    annotateNextId = maxId + 1;
+  }
+
   /** 加载标注数据：优先读 JSON 文件（最新），回退 localStorage（编辑中未保存的状态） */
   function loadAnnotations(callback) {
     // 1. 优先 fetch 同目录标注.json（始终获取最新文件内容）
@@ -541,7 +536,7 @@
         callback(jsonData.scrollY || 0);
         return;
       }
-      // 2. JSON 文件不存在或为空，回退读 localStorage
+      // 2. JSON 文件不存在或为空，回退读 localStorage（用户正在编辑但尚未保存到文件）
       try {
         var stored = localStorage.getItem(getStorageKey());
         if (stored) {
@@ -587,6 +582,8 @@
   // 隐藏当前页面的文档浮动按钮（如果在 iframe 预览中）
   if (location.search.indexOf('dm_nodoc=1') >= 0) {
     function hideDocBtn() {
+      var grp = document.getElementById('_dm_float_group');
+      if (grp) { grp.style.display = 'none'; return true; }
       var btn = document.getElementById('_dm_float_btn');
       if (btn) { btn.style.display = 'none'; return true; }
       return false;
@@ -603,13 +600,46 @@
   //  事件委托
   //  ═══════════════════════════════════════════════
   document.addEventListener('click', function(e) {
-    // 点击关闭按钮不触发文档模式切换
-    if (isInside(e.target, '._dm_close')) return;
+
+    if (isInside(e.target, '#_dm_float_close')) {
+      var grp = document.getElementById('_dm_float_group');
+      if (grp) { grp.style.display = 'none'; }
+      else {
+        var b = document.getElementById('_dm_float_btn');
+        if (b) b.style.display = 'none';
+      }
+      return;
+    }
+    // 多文档模式：点击某个文档按钮
+    var docBtn = e.target.closest ? e.target.closest('._dm_doc_btn') : null;
+    if (docBtn && _dm_multiDocs) {
+      var idx = parseInt(docBtn.getAttribute('data-idx'), 10);
+      if (!isNaN(idx) && _dm_multiDocs[idx]) {
+        // 已在文档模式且点击的是当前激活按钮 → 退出文档模式
+        if (MODE === 'doc' && idx === _dm_activeDocIdx) {
+          exitDocMode();
+          return;
+        }
+        currentPageMd = _dm_multiDocs[idx].file;
+        _dm_activeDocIdx = idx;
+        if (MODE === 'browse') enterDocMode(); else loadMdDoc();
+        // 高亮激活按钮
+        var allBtns = document.querySelectorAll('._dm_doc_btn');
+        for (var i = 0; i < allBtns.length; i++) {
+          allBtns[i].style.background = (i === idx) ? '#e6f7ee' : '';
+        }
+        // 更新工具栏标题
+        var titleEl = document.querySelector('._dm_tb_title');
+        if (titleEl) titleEl.textContent = '📄 ' + _dm_multiDocs[idx].name;
+      }
+      return;
+    }
     if (isInside(e.target, '#_dm_float_btn')) {
       if (MODE === 'browse') enterDocMode(); else exitDocMode();
     }
     if (isInside(e.target, '#_dm_divider')) { toggleSidebar(); return; }
     if (isInside(e.target, '#_dm_annotate_btn')) toggleAnnotate();
+    if (isInside(e.target, '#_dm_doc_exit_btn')) { exitDocMode(); }
     if (isInside(e.target, '#_dm_edit_exit_btn')) { abortAnnotate(); }
   });
 
@@ -629,9 +659,16 @@
       '  user-select:none;transition:box-shadow .15s; }',
       '._dm_float:hover { box-shadow:0 4px 16px rgba(0,0,0,.15); }',
       '._dm_float ._dm_icon { color:#18A55D;font-size:16px; }',
-      '._dm_float ._dm_close { font-size:16px;color:#aaa;cursor:pointer;',
-      '  margin-left:4px;line-height:1;transition:color .15s; }',
-      '._dm_float ._dm_close:hover { color:#666; }',
+      '._dm_float_close { position:absolute;top:-8px;right:-8px;width:18px;height:18px;',
+      '  border-radius:50%;background:#999;color:#fff;font-size:11px;line-height:18px;',
+      '  text-align:center;cursor:pointer;box-shadow:0 0 0 2px #fff;',
+      '  transition:background .15s; }',
+      '._dm_float_close:hover { background:#666; }',
+      /* ══ 多文档纵向容器 ══ */
+      '._dm_float_group { position:fixed;right:16px;bottom:16px;z-index:99999;',
+      '  display:flex;flex-direction:column;gap:6px;overflow:visible; }',
+      '._dm_float_group ._dm_float { position:static; }',
+
       /* ══ 文档模式覆盖层 ══ */
       '._dm_overlay { position:fixed;inset:0;z-index:99990;',
       '  background:#f0f2f5;display:none;flex-direction:row; }',
@@ -668,11 +705,11 @@
       '._dm_left_viewport iframe { width:100%;height:100%;min-height:calc(100vh - 48px);',
       '  border:none;display:block; }',
 
-      /* 框选相关 */
-      '._dm_hover_highlight { position:absolute;pointer-events:none;',
+      /* 框选相关（position:fixed → 锁定视口，滚动不跟随） */
+      '._dm_hover_highlight { position:fixed;pointer-events:none;',
       '  border:2px dashed #18A55D;background:rgba(24,165,93,0.08);',
       '  z-index:10;transition:all .1s ease; }',
-      '._dm_box { position:absolute;border:2px solid #f5a623;',
+      '._dm_box { position:fixed;border:2px solid #f5a623;',
       '  background:rgba(245,166,35,.08);z-index:12;pointer-events:auto; }',
       '._dm_editable ._dm_box { cursor:move; }',
       '._dm_box_handle { display:none;position:absolute;width:8px;height:8px;',
@@ -696,27 +733,7 @@
       '  box-shadow:0 2px 6px rgba(245,166,35,.4);',
       '  transition:transform .15s; }',
       '._dm_editable ._dm_box_num { cursor:pointer; }',
-      /* 说明标签：编号旁边，有说明时显示"说明" */
-      '._dm_box_desc { display:none;height:22px;padding:0 5px;border-radius:4px;',
-      '  background:#e8a030;color:#fff;font-size:11px;font-weight:bold;',
-      '  align-items:center;justify-content:center;line-height:1;',
-      '  box-shadow:0 2px 6px rgba(245,166,35,.4);',
-      '  cursor:default; }',
-      '._dm_box.has_desc ._dm_box_desc { display:flex; }',
-      '._dm_editable ._dm_box_desc { display:none !important; }',
-      /* tooltip：JS动态定位，默认隐藏 */
-      '._dm_desc_tip { display:none;position:absolute;',
-      '  background:#333;color:#fff;padding:8px 12px;border-radius:4px;',
-      '  font-size:12px;line-height:1.6;min-width:120px;max-width:280px;',
-      '  word-break:break-word;white-space:pre-wrap;',
-      '  z-index:9999;pointer-events:none;',
-      '  box-shadow:0 2px 8px rgba(0,0,0,.25); }',
-      '._dm_desc_tip._dm_tip_show { display:block; }',
-      '._dm_editable ._dm_desc_tip { display:none !important; }',
-      '._dm_desc_tip_arrow { position:absolute;width:0;height:0;',
-      '  border:6px solid transparent; }',
-      '._dm_desc_tip._dm_tip_above ._dm_desc_tip_arrow { top:100%;margin-top:-1px;border-top-color:#333; }',
-      '._dm_desc_tip._dm_tip_below ._dm_desc_tip_arrow { bottom:100%;margin-bottom:-1px;border-bottom-color:#333; }',
+      /* 说明标签和 tooltip 已移除 */
       /* 删除按钮：编辑模式下右上角，始终可见 */
       '._dm_box_del { display:none;position:absolute;top:-14px;right:-14px;',
       '  width:24px;height:24px;border-radius:50%;background:#ff4d4f;',
@@ -740,6 +757,8 @@
       '  transition:all .15s;user-select:none; }',
       '._dm_tab:hover { color:#555; }',
       '._dm_tab._dm_active { color:#18A55D;border-bottom-color:#18A55D;font-weight:600; }',
+      '._dm_mark { color:#18A55D;font-weight:600;background:#e8f8ef;padding:1px 6px;',
+      '  border-radius:3px;font-style:normal; }',
       '._dm_right_body { flex:1;overflow-y:auto;padding:18px 22px 40px;display:none;',
       '  font-size:14px;line-height:1.75;color:#333;',
       '  font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }',
@@ -760,10 +779,10 @@
 
       '._dm_empty { text-align:center;padding:50px 20px;color:#ccc;font-size:13px; }',
 
-      '@media(max-width:900px){ ._dm_right { width:360px;min-width:280px; } }',
-      '@media(max-width:700px){ ._dm_overlay { flex-direction:column; }',
-      '  ._dm_right { width:100%;min-width:0;height:45%;margin-top:0; }',
-      '  ._dm_left { flex:none;height:55%;margin-top:48px; } }',
+      '@media(max-width:900px){ ._dm_right { flex:0 0 360px;min-width:280px; } }',
+      '@media(max-width:700px){',
+      '  ._dm_left { flex:none;width:50%;min-width:0;margin-top:48px; }',
+      '  ._dm_right { flex:1;width:50%;min-width:0;margin-top:0; } }',
     ].join('\n');
     document.head.appendChild(css);
   }
@@ -771,27 +790,41 @@
   // ═══════════════════════════════════════════════
   //  DOM 创建
   //  ═══════════════════════════════════════════════
-  var overlay, rightBodyPage, rightBodyAnno;
+  var overlay, rightBodyPage;
 
   function createDOM() {
-    // 如果已关闭，不创建悬浮按钮
-    if (_docHidden) return;
-
-    // 浏览模式按钮
-    var btn = document.createElement('div');
-    btn.className = '_dm_float';
-    btn.id = '_dm_float_btn';
-    btn.innerHTML = '<span class="_dm_icon">📄</span><span>文档</span><span class="_dm_close">\u00D7</span>';
-    // 关闭按钮事件
-    var closeEl = btn.querySelector('._dm_close');
-    if (closeEl) {
-      closeEl.addEventListener('click', function(e) {
-        e.stopPropagation();
-        _docHidden = true;
-        btn.remove();
-      });
+    if (_dm_multiDocs && _dm_multiDocs.length > 1) {
+      // ── 多文档模式：纵向排列多个按钮 ──
+      var group = document.createElement('div');
+      group.className = '_dm_float_group';
+      group.id = '_dm_float_group';
+      for (var i = 0; i < _dm_multiDocs.length; i++) {
+        var btn = document.createElement('div');
+        btn.className = '_dm_float _dm_doc_btn';
+        btn.setAttribute('data-idx', i);
+        btn.innerHTML = '<span class="_dm_icon">📄</span><span>' + _dm_multiDocs[i].name + '</span>';
+        group.appendChild(btn);
+      }
+      // 关闭按钮放在容器右上角，z-index 确保不被按钮盖住
+      var closeSpan = document.createElement('span');
+      closeSpan.className = '_dm_float_close';
+      closeSpan.id = '_dm_float_close';
+      closeSpan.innerHTML = '\u00D7';
+      closeSpan.style.position = 'absolute';
+      closeSpan.style.top = '-8px';
+      closeSpan.style.right = '-8px';
+      closeSpan.style.transform = 'none';
+      closeSpan.style.zIndex = '10';
+      group.appendChild(closeSpan);
+      document.body.appendChild(group);
+    } else {
+      // ── 单文档模式（原有逻辑） ──
+      var btn = document.createElement('div');
+      btn.className = '_dm_float';
+      btn.id = '_dm_float_btn';
+      btn.innerHTML = '<span class="_dm_icon">📄</span><span>文档</span><span class="_dm_float_close" id="_dm_float_close">\u00D7</span>';
+      document.body.appendChild(btn);
     }
-    document.body.appendChild(btn);
 
     // 覆盖层
     overlay = document.createElement('div');
@@ -807,6 +840,7 @@
       '</div>' +
       '<div class="_dm_tb_right">' +
         '<button class="_dm_tb_btn _dm_tb_primary" id="_dm_annotate_btn">标注</button>' +
+        '<button class="_dm_tb_btn" id="_dm_doc_exit_btn">退出</button>' +
         '<button class="_dm_tb_btn" id="_dm_edit_exit_btn" style="display:none;">退出编辑</button>' +
       '</div>';
     overlay.appendChild(tb);
@@ -827,53 +861,52 @@
     divider.id = '_dm_divider';
     overlay.appendChild(divider);
 
-    // 右侧面板（带 Tab）
+    // 右侧面板（仅页面说明，去掉独立的标注说明Tab）
     var right = document.createElement('div');
     right.className = '_dm_right';
     right.id = '_dm_right';
-    // Tab 栏：标注说明（左，默认激活）| 页面说明（右）
-    var tabs = document.createElement('div');
-    tabs.className = '_dm_tabs';
-    tabs.innerHTML =
-      '<div class="_dm_tab _dm_active" data-tab="anno">标注说明</div>' +
-      '<div class="_dm_tab" data-tab="page">页面说明</div>';
-    right.appendChild(tabs);
-    // 标注 body（默认激活）
-    rightBodyAnno = document.createElement('div');
-    rightBodyAnno.className = '_dm_right_body _dm_active';
-    rightBodyAnno.id = '_dm_right_body_anno';
-    rightBodyAnno.innerHTML = '<div class="_dm_empty">加载标注说明中...</div>';
-    right.appendChild(rightBodyAnno);
-    // 页面说明 body
     rightBodyPage = document.createElement('div');
-    rightBodyPage.className = '_dm_right_body';
+    rightBodyPage.className = '_dm_right_body _dm_active';
     rightBodyPage.id = '_dm_right_body_page';
     rightBodyPage.innerHTML = '<div class="_dm_empty">加载文档中...</div>';
     right.appendChild(rightBodyPage);
     overlay.appendChild(right);
     document.body.appendChild(overlay);
 
-    // Tab 切换事件
-    initTabs();
+    // 检测是否为手机端页面（B端APP/C端/企业微信），强制应用移动端布局
+    detectMobilePage();
   }
 
   // ═══════════════════════════════════════════════
-  //  Tab 切换
+  //  检测手机端页面 → 强制移动端布局
   //  ═══════════════════════════════════════════════
-  function initTabs() {
-    var tabs = document.querySelectorAll('._dm_tab');
-    tabs.forEach(function(tab) {
-      tab.addEventListener('click', function() {
-        // 切换 tab 激活状态
-        tabs.forEach(function(t) { t.classList.remove('_dm_active'); });
-        tab.classList.add('_dm_active');
-        // 切换 body 显示
-        var target = tab.getAttribute('data-tab');
-        rightBodyPage.classList.toggle('_dm_active', target === 'page');
-        rightBodyAnno.classList.toggle('_dm_active', target === 'anno');
-      });
-    });
+  var _isMobilePage = false;
+
+  function detectMobilePage() {
+    // 判断依据：页面包含 .mobile-app 容器（max-width:375px）
+    // 或 viewport meta 设置了 maximum-scale（手机页面特征）
+    var hasMobileApp = !!document.querySelector('.mobile-app');
+    var viewportMeta = document.querySelector('meta[name="viewport"]');
+    var hasMaxScale = viewportMeta && /maximum-scale/i.test(viewportMeta.getAttribute('content') || '');
+    var path = decodeURIComponent(location.pathname);
+    var inMobileDir = /B端APP|C端|企业微信/.test(path);
+
+    _isMobilePage = hasMobileApp || (hasMaxScale && inMobileDir);
+
+    if (_isMobilePage) {
+      // 注入手机端强制布局样式（不依赖视口宽度）
+      var mobileCSS = document.createElement('style');
+      mobileCSS.id = '_dm_mobile_force';
+      mobileCSS.textContent = [
+        '._dm_overlay._dm_show { flex-direction: row !important; }',
+        '._dm_overlay._dm_show ._dm_left { flex: none !important; width: 50% !important; min-width: 0 !important; }',
+        '._dm_overlay._dm_show ._dm_right { flex: 1 !important; width: 50% !important; min-width: 0 !important; }',
+      ].join('\n');
+      document.head.appendChild(mobileCSS);
+    }
   }
+
+  /** 更新右侧面板显隐（简化版：仅检查页面说明MD是否存在） */
 
   // ═══════════════════════════════════════════════
   //  侧边栏展开/收起切换
@@ -1020,16 +1053,30 @@
   function enterDocMode() {
     MODE = 'doc';
     overlay.classList.add('_dm_show');
+    // 加载页面说明MD
     loadMdDoc();
-    loadAnnoDoc();
-    loadAnnoDescriptions(function() {
-      reRenderDescriptions();
-    });
     iframeReady = false;
     renderPagePreview();
-    // 文档模式按钮变绿色
-    var btn = document.getElementById('_dm_float_btn');
-    if (btn) btn.style.background = '#e6f7ee';
+    // 文档模式按钮变绿色，隐藏关闭按钮
+    if (_dm_multiDocs && _dm_multiDocs.length > 1) {
+      // 多文档：高亮当前激活按钮
+      var allBtns = document.querySelectorAll('._dm_doc_btn');
+      for (var i = 0; i < allBtns.length; i++) {
+        allBtns[i].style.background = (i === _dm_activeDocIdx) ? '#e6f7ee' : '';
+      }
+      var closeBtn = document.getElementById('_dm_float_close');
+      if (closeBtn) closeBtn.style.display = 'none';
+      // 更新工具栏标题
+      if (_dm_activeDocIdx >= 0 && _dm_multiDocs[_dm_activeDocIdx]) {
+        var titleEl = document.querySelector('._dm_tb_title');
+        if (titleEl) titleEl.textContent = '📄 ' + _dm_multiDocs[_dm_activeDocIdx].name;
+      }
+    } else {
+      var btn = document.getElementById('_dm_float_btn');
+      if (btn) btn.style.background = '#e6f7ee';
+      var closeBtn = document.getElementById('_dm_float_close');
+      if (closeBtn) closeBtn.style.display = 'none';
+    }
   }
 
   function exitDocMode() {
@@ -1037,9 +1084,20 @@
     overlay.classList.remove('_dm_show');
     if (annotateMode) toggleAnnotate();
     saveAnnotations();
-    // 恢复按钮颜色
-    var btn = document.getElementById('_dm_float_btn');
-    if (btn) btn.style.background = '';
+    // 恢复按钮颜色，显示关闭按钮
+    if (_dm_multiDocs && _dm_multiDocs.length > 1) {
+      var grp = document.getElementById('_dm_float_group');
+      if (grp) grp.style.display = '';
+      var allBtns = document.querySelectorAll('._dm_doc_btn');
+      for (var i = 0; i < allBtns.length; i++) allBtns[i].style.background = '';
+      var closeBtn = document.getElementById('_dm_float_close');
+      if (closeBtn) closeBtn.style.display = '';
+    } else {
+      var btn = document.getElementById('_dm_float_btn');
+      if (btn) btn.style.background = '';
+      var closeBtn = document.getElementById('_dm_float_close');
+      if (closeBtn) closeBtn.style.display = '';
+    }
     // 清除 iframe 内的标注框 DOM
     try {
       if (pageIframe && pageIframe.contentDocument) {
@@ -1097,16 +1155,16 @@
   /** 进入标注编辑模式（hover 元素 + 点击创建框） */
   function enterAnnotateMode() {
     if (!pageIframe || !iframeReady) { alert('预览页面加载中，请稍后再试'); return; }
-    // 快照：保存进入编辑前的标注数据
-    annoSnapshot = annotations.slice().map(function(a) {
-      return { id: a.id, x: a.x, y: a.y, w: a.w, h: a.h };
-    });
+    // 快照：保存进入编辑前的完整标注数据（深拷贝，保留 context/xpath 等字段）
+    annoSnapshot = JSON.parse(JSON.stringify(annotations));
     annotateMode = true;
     var btn = document.getElementById('_dm_annotate_btn');
     btn.className = '_dm_tb_btn _dm_tb_danger';
     btn.textContent = '✓ 完成';
     var exitBtn = document.getElementById('_dm_edit_exit_btn');
     if (exitBtn) exitBtn.style.display = '';
+    var docExitBtn = document.getElementById('_dm_doc_exit_btn');
+    if (docExitBtn) docExitBtn.style.display = 'none';
     try {
       var doc = pageIframe.contentDocument;
       if (!doc) { annotateMode = false; return; }
@@ -1127,6 +1185,8 @@
     btn.textContent = '标注';
     var exitBtn = document.getElementById('_dm_edit_exit_btn');
     if (exitBtn) exitBtn.style.display = 'none';
+    var docExitBtn = document.getElementById('_dm_doc_exit_btn');
+    if (docExitBtn) docExitBtn.style.display = '';
     try {
       if (pageIframe && pageIframe.contentDocument) {
         var doc = pageIframe.contentDocument;
@@ -1158,31 +1218,43 @@
   //  加载产品文档 MD
   //  ═══════════════════════════════════════════════
   function loadMdDoc() {
-    fetch(currentPageMd + '?v=' + Date.now(), { cache: 'no-store' })
+    _mdFileExists = false;
+    return fetch(currentPageMd + '?v=' + Date.now(), { cache: 'no-store' })
       .then(function(r) { if (!r.ok) throw new Error('404'); return r.text(); })
-      .then(function(text) { mdContent = text; rightBodyPage.innerHTML = mdToHtml(text); })
+      .then(function(text) { _mdFileExists = true; mdContent = text; rightBodyPage.innerHTML = mdToHtml(text); })
       .catch(function() {
+        _mdFileExists = false;
         rightBodyPage.innerHTML = '<div class="_dm_empty"><p>⚠ 未找到文档</p><p style="font-size:12px;">当前页：' + currentPageMd + '</p></div>';
-      });
-  }
-
-  /** 加载标注说明MD到标注Tab（带缓存绕过） */
-  function loadAnnoDoc() {
-    fetch(getAnnoDescFileName() + '?v=' + Date.now(), { cache: 'no-store' })
-      .then(function(r) { if (!r.ok) throw new Error('404'); return r.text(); })
-      .then(function(text) { rightBodyAnno.innerHTML = mdToHtml(text); })
-      .catch(function() {
-        rightBodyAnno.innerHTML = '<div class="_dm_empty"><p>暂无标注说明</p><p style="font-size:12px;">文件：' + getAnnoDescFileName() + '</p></div>';
       });
   }
 
   function mdToHtml(md) {
     var h = md;
+    // 围栏代码块保护：先提取 ```...``` 块，避免被后续处理破坏
+    var _codeBlocks = [];
+    h = h.replace(/```(\w*)\n([\s\S]*?)```/g, function(_, lang, code) {
+      _codeBlocks.push(code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'));
+      return '\x00CB' + (_codeBlocks.length - 1) + '\x00';
+    });
+    // Markdown链接 [text](url) → 先用占位符保护，避免被HTML转义破坏
+    var _links = [];
+    h = h.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(_, text, url) {
+      _links.push('<a href="' + url + '" target="_blank" style="color:#1890ff;text-decoration:underline;">' + text + '</a>');
+      return '\x00L' + (_links.length - 1) + '\x00';
+    });
     h = h.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    // 还原链接占位符
+    h = h.replace(/\x00L(\d+)\x00/g, function(_, i) { return _links[+i]; });
+    // 还原围栏代码块占位符
+    h = h.replace(/\x00CB(\d+)\x00/g, function(_, i) {
+      return '<pre style="background:#f6f8fa;border:1px solid #e1e4e8;border-radius:8px;padding:12px;overflow-x:auto;font-size:12px;line-height:1.5;margin:8px 0;"><code>' + _codeBlocks[+i] + '</code></pre>';
+    });
     h = h.replace(/^### (.+)/gm, '<h3>$1</h3>');
     h = h.replace(/^## (.+)/gm, '<h2>$1</h2>');
     h = h.replace(/^# (.+)/gm, '<h1>$1</h1>');
     h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    // 通用斜体标记：*文字* → 绿色高亮（支持任意文本，不限于标注位置）
+    h = h.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<span class="_dm_mark">$1</span>');
     h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
     var lines = h.split('\n'), result = [], inTable = false;
     for (var i = 0; i < lines.length; i++) {
@@ -1199,8 +1271,10 @@
     }
     if (inTable) result.push('</table>');
     h = result.join('\n');
-    h = h.replace(/^(?!<[ht]|<table|<\/table)(.+)/gm, '<p>$1</p>');
+    h = h.replace(/^(?!<[ht]|<pre|<table|<\/table)(.+)/gm, '<p>$1</p>');
     h = h.replace(/<p>\s*<\/p>/g, '');
+    // 自动将纯URL转为可点击链接（不重复处理已在<a>内的URL）
+    h = h.replace(/(?<!["=])(https?:\/\/[^\s<&]+)/g, '<a href="$1" target="_blank" style="color:#1890ff;text-decoration:underline;word-break:break-all;">$1</a>');
     return h;
   }
 
@@ -1227,6 +1301,10 @@
               // 检测 overlay/modal 的 show/visible 状态切换
               if (/overlay|modal|dialog|popup/i.test(el.id || '') ||
                   (/(^|\s)(show|visible|open|active)(\s|$)/.test(' ' + cls + ' '))) {
+                needsRefresh = true; break;
+              }
+              // 任何有 id 的元素 style 变化 → 可能是视图容器切换（如 boundView/unboundView）
+              if (el.id && m.attributeName === 'style') {
                 needsRefresh = true; break;
               }
               var cs = doc.defaultView.getComputedStyle(el);
@@ -1263,6 +1341,47 @@
         attributes: true, attributeFilter: ['style', 'class'],
         childList: true, subtree: true
       });
+      // 兜底定时器：每2秒刷新标注可见性（防止 observer 漏掉变化）
+      clearInterval(_repaintTimer);
+      _repaintTimer = setInterval(function() {
+        if (MODE !== 'doc') { clearInterval(_repaintTimer); return; }
+        if (annotations.length > 0) repositionAllBoxes();
+      }, 2000);
+      // 滚动实时重定位：用 requestAnimationFrame 实现零延迟跟随
+      var _scrollTicking = false;
+      function onAnyScroll() {
+        if (MODE !== 'doc' || annotations.length === 0 || _scrollTicking) return;
+        _scrollTicking = true;
+        doc.defaultView.requestAnimationFrame(function() {
+          _scrollTicking = false;
+          repositionAllBoxes();
+        });
+      }
+      // iframe 主窗口滚动：position:fixed 标注框不动，但锚点元素随内容移动，需实时重定位
+      doc.defaultView.addEventListener('scroll', onAnyScroll);
+      // overflow 容器滚动（弹窗内部、Tab 栏等，锚点元素在容器内移动需重定位）
+      var allEls = doc.querySelectorAll('*');
+      for (var oi = 0; oi < allEls.length; oi++) {
+        var oEl = allEls[oi];
+        if (oEl === doc.body || oEl === doc.documentElement) continue;
+        var oCs = doc.defaultView.getComputedStyle(oEl);
+        if (/auto|scroll/.test(oCs.overflowX + '|' + oCs.overflowY + '|' + oCs.overflow)) {
+          oEl.addEventListener('scroll', onAnyScroll);
+        }
+      }
+      // 外层左侧面板滚动：iframe 随 ._dm_left 滚动移动，position:fixed 标注框需实时重定位
+      var outerLeft = document.getElementById('_dm_left');
+      if (outerLeft) {
+        var _outerScrollTicking = false;
+        outerLeft.addEventListener('scroll', function() {
+          if (MODE !== 'doc' || annotations.length === 0 || _outerScrollTicking) return;
+          _outerScrollTicking = true;
+          requestAnimationFrame(function() {
+            _outerScrollTicking = false;
+            repositionAllBoxes();
+          });
+        });
+      }
     } catch(e) {}
   }
 
@@ -1279,6 +1398,16 @@
     iframe.style.height = '100%';
 
     iframe.onload = function() {
+      // iframe 导航后立即清理旧标注框，防止残留
+      if (iframeReady && annotations.length > 0) {
+        try {
+          var oldBody = iframe.contentDocument.body;
+          if (oldBody) {
+            var oldBoxes = oldBody.querySelectorAll('._dm_box');
+            for (var i = 0; i < oldBoxes.length; i++) oldBoxes[i].parentNode.removeChild(oldBoxes[i]);
+          }
+        } catch(e) {}
+      }
       iframeReady = true;
       injectIframeCSS(iframe);
       try {
@@ -1286,8 +1415,8 @@
           if (isInside(ev.target, '._dm_box_del')) {
             var b = ev.target.closest ? ev.target.closest('._dm_box') : null;
             if (b) {
-              var id = parseInt(b.getAttribute('data-id'));
-              if (!isNaN(id)) deleteBox(id);
+              var uid = b.getAttribute('data-uid');
+              if (uid) deleteBox(uid);
             }
           }
         });
@@ -1316,10 +1445,10 @@
       var style = doc.createElement('style');
       style.id = '_dm_iframe_styles';
       style.textContent = [
-        '._dm_hover_highlight { position:absolute;pointer-events:none;',
+        '._dm_hover_highlight { position:fixed;pointer-events:none;',
         '  border:2px dashed #18A55D;background:rgba(24,165,93,0.08);',
         '  z-index:2147483643;transition:all .1s ease; }',
-        '._dm_box { position:absolute;border:2px solid #f5a623;',
+        '._dm_box { position:fixed;border:2px solid #f5a623;',
         '  background:rgba(245,166,35,.08);z-index:2147483645;pointer-events:auto; }',
         '._dm_editable ._dm_box { cursor:move; }',
         '._dm_box_handle { display:none;position:absolute;width:8px;height:8px;',
@@ -1343,25 +1472,6 @@
         '  box-shadow:0 2px 6px rgba(245,166,35,.4);',
         '  transition:transform .15s; }',
         '._dm_editable ._dm_box_num { cursor:pointer; }',
-        '._dm_box_desc { display:none;height:22px;padding:0 5px;border-radius:4px;',
-        '  background:#e8a030;color:#fff;font-size:11px;font-weight:bold;',
-        '  align-items:center;justify-content:center;line-height:1;',
-        '  box-shadow:0 2px 6px rgba(245,166,35,.4); }',
-        '._dm_box.has_desc ._dm_box_desc { display:flex; }',
-        '._dm_editable ._dm_box_desc { display:none !important; }',
-        /* tooltip：JS动态定位，默认隐藏 */
-        '._dm_desc_tip { display:none;position:absolute;',
-        '  background:#333;color:#fff;padding:8px 12px;border-radius:4px;',
-        '  font-size:12px;line-height:1.6;min-width:120px;max-width:280px;',
-        '  word-break:break-word;white-space:pre-wrap;',
-        '  z-index:9999;pointer-events:none;',
-        '  box-shadow:0 2px 8px rgba(0,0,0,.25); }',
-        '._dm_desc_tip._dm_tip_show { display:block; }',
-        '._dm_editable ._dm_desc_tip { display:none !important; }',
-        '._dm_desc_tip_arrow { position:absolute;width:0;height:0;',
-        '  border:6px solid transparent; }',
-        '._dm_desc_tip._dm_tip_above ._dm_desc_tip_arrow { top:100%;margin-top:-1px;border-top-color:#333; }',
-        '._dm_desc_tip._dm_tip_below ._dm_desc_tip_arrow { bottom:100%;margin-bottom:-1px;border-bottom-color:#333; }',
         '._dm_box_del { display:none;position:absolute;top:-14px;right:-14px;',
         '  width:24px;height:24px;border-radius:50%;background:#ff4d4f;',
         '  color:#fff;font-size:16px;font-weight:bold;line-height:1;',
@@ -1404,8 +1514,8 @@
 
     if (!el || el === doc.body || el === doc.documentElement) return null;
 
-    // 跳过已有标注框内的子元素
-    if (el.closest('._dm_box')) return null;
+    // 跳过已有标注框内的子元素和自定义弹窗
+    if (el.closest('._dm_box') || el.closest('#_dm_prompt_overlay')) return null;
 
     // 向上找到有意义的容器（TD/TH/TR/LI/DIV/SECTION/TABLE/BUTTON/A/SPAN/P...）
     var meaningfulTags = {
@@ -1455,7 +1565,6 @@
     if (!el || el === doc.body || el === doc.documentElement) { hideHoverHighlight(); return; }
     if (el === hoverElement) return;
 
-    var scrollY = pageIframe.contentWindow.scrollY || 0;
     var rect = el.getBoundingClientRect();
     if (rect.width < 8 || rect.height < 8) { hideHoverHighlight(); return; }
 
@@ -1465,11 +1574,11 @@
       doc.body.appendChild(hoverHighlightEl);
     }
 
-    // 原地更新样式（不删除重建，不触发 DOM 回流）
+    // 原地更新样式（position:fixed + 视口坐标，不加 scrollY）
     hoverHighlightEl.style.cssText =
-      'display:block;position:absolute;pointer-events:none;z-index:2147483643;' +
+      'display:block;position:fixed;pointer-events:none;z-index:2147483643;' +
       'border:2px dashed #18A55D;background:rgba(24,165,93,0.08);' +
-      'left:' + rect.left + 'px;top:' + (rect.top + scrollY) + 'px;' +
+      'left:' + rect.left + 'px;top:' + rect.top + 'px;' +
       'width:' + rect.width + 'px;height:' + rect.height + 'px;';
     hoverElement = el;
     doc.body.style.cursor = 'pointer';
@@ -1488,8 +1597,8 @@
     var doc = pageIframe.contentDocument;
     if (!doc) return;
 
-    // 鼠标在已有标注框上 → 隐藏高亮（只 display:none，不删 DOM）
-    if (isInside(e.target, '._dm_box')) { hideHoverHighlight(); return; }
+    // 鼠标在已有标注框或自定义弹窗上 → 隐藏高亮
+    if (isInside(e.target, '._dm_box') || isInside(e.target, '#_dm_prompt_overlay')) { hideHoverHighlight(); return; }
 
     _hoverPending = true;
     var clientX = e.clientX, clientY = e.clientY;
@@ -1529,22 +1638,48 @@
     }
 
     // 1.5 如果没有弹窗容器，检测元素是否在可切换视图内（如 boundView/unboundView）
-    //     这类视图通过 JS 设置 display:none/block 切换，需要独立 context
+    //     这类视图通过 JS 设置 display:none/block 切换，需要独立 context。
+    //     用 offsetHeight === 0 检测隐藏兄弟（比 style.display 更可靠）
     if (containerId === 'main') {
-      candidate = el;
-      while (candidate && candidate !== doc.body && candidate !== doc.documentElement) {
-        if (candidate.id && candidate !== el && candidate.nodeType === 1) {
-          // 如果该祖先有 style.display 属性（inline），说明它是 JS 可切换的视图容器
-          // 或者它内部的兄弟视图显式设置了 display:none（如 boundView 初始隐藏）
-          if (candidate.style.display === 'none' || candidate.style.display === 'block' || candidate.style.display === '') {
-            var cs2 = doc.defaultView.getComputedStyle(candidate);
-            if (parseInt(cs2.width) > 100 || parseInt(cs2.height) > 100) {
-              containerId = candidate.id;
-              break;
+      // 先检查 el 自身（findHoverTarget 可能直接返回视图容器）
+      if (el.id && el.nodeType === 1) {
+        var parent = el.parentElement;
+        if (parent) {
+          var sibs = parent.children;
+          for (var si = 0; si < sibs.length; si++) {
+            if (sibs[si] !== el && sibs[si].offsetHeight === 0 && sibs[si].offsetWidth === 0) {
+              if (parseInt(el.offsetWidth) > 50) {
+                containerId = el.id;
+                break;
+              }
             }
           }
         }
-        candidate = candidate.parentElement;
+      }
+      // 再检查祖先
+      if (containerId === 'main') {
+        candidate = el;
+        while (candidate && candidate !== doc.body && candidate !== doc.documentElement) {
+          if (candidate.id && candidate !== el && candidate.nodeType === 1) {
+            var parent2 = candidate.parentElement;
+            if (parent2) {
+              var siblingsOfCandidate = parent2.children;
+              var hasHiddenSibling = false;
+              for (var si2 = 0; si2 < siblingsOfCandidate.length; si2++) {
+                if (siblingsOfCandidate[si2] !== candidate &&
+                    siblingsOfCandidate[si2].offsetHeight === 0 && siblingsOfCandidate[si2].offsetWidth === 0) {
+                  hasHiddenSibling = true;
+                  break;
+                }
+              }
+              if (hasHiddenSibling && parseInt(candidate.offsetWidth) > 50) {
+                containerId = candidate.id;
+                break;
+              }
+            }
+          }
+          candidate = candidate.parentElement;
+        }
       }
     }
 
@@ -1583,8 +1718,9 @@
   /** capture 阶段：拦截页面交互 + 创建标注框 */
   function onCaptureClick(e) {
     if (!annotateMode) return;
-    // 放行标注框自身操作（拖拽/删除/改名）
+    // 放行标注框自身操作和自定义弹窗（拖拽/删除/改名/弹窗交互）
     if (isInside(e.target, '._dm_box')) return;
+    if (isInside(e.target, '#_dm_prompt_overlay')) return;
 
     // 拦截页面交互
     e.stopPropagation();
@@ -1592,8 +1728,6 @@
 
     if (!pageIframe || !pageIframe.contentDocument || !pageIframe.contentWindow) return;
     var doc = pageIframe.contentDocument;
-    var win = pageIframe.contentWindow;
-    var scrollY = win.scrollY || 0;
 
     // 直接用 elementFromPoint 获取点击位置元素（不依赖异步 hoverElement）
     var target = findHoverTarget(doc, e.clientX, e.clientY);
@@ -1603,13 +1737,15 @@
     if (rect.width < 8 || rect.height < 8) return;
 
     var x = rect.left;
-    var y = rect.top + scrollY;
+    var y = rect.top;
     var w = rect.width;
     var h = rect.height;
 
     var ctx = getElementContext(target, doc);
     var a = { id: annotateNextId, x: x, y: y, w: w, h: h, context: ctx };
-    setAnchorOnAnnotation(a, x, y, w, h);
+    assignUid(a);
+    // 直接用 findHoverTarget 返回的 target 元素做锚点（不再重复 elementFromPoint）
+    setAnchorOnTarget(a, target, x, y, w, h, doc);
 
     // 防重复：同一元素（相同 XPath）只能标注一次
     var isDuplicate = false;
@@ -1630,78 +1766,11 @@
   }
 
   /** 动态计算 tooltip 位置：根据 iframe viewport 自动选择最佳展示位置 */
-  function positionTooltip(box, tip) {
-    if (!pageIframe || !pageIframe.contentWindow) return;
-    var win = pageIframe.contentWindow;
-    var vw = win.innerWidth;
-    var vh = win.innerHeight;
-    var boxRect = box.getBoundingClientRect();
-
-    // 移除旧状态
-    tip.classList.remove('_dm_tip_above', '_dm_tip_below');
-    tip.style.left = '';
-    tip.style.top = '';
-    tip.style.maxWidth = '';
-    tip.style.display = 'block';
-    tip.style.visibility = 'hidden'; // 先隐藏测尺寸
-
-    // 测量 tip 尺寸
-    var tipW = tip.offsetWidth || 200;
-    var tipH = tip.offsetHeight || 50;
-
-    // 约束最大宽度（视口内留 20px 边距）
-    var maxW = Math.min(280, vw - 20);
-    tip.style.maxWidth = maxW + 'px';
-    // 重新测量（max-width 可能影响换行后的宽度和高度）
-    tipW = Math.min(tip.offsetWidth || tipW, maxW);
-    tipH = tip.offsetHeight || tipH;
-
-    // 水平定位：优先居中，超出则靠边
-    var tipLeft = (boxRect.width - tipW) / 2;
-    var boxLeftRel = boxRect.left;
-    var overflowLeft = -(boxLeftRel + tipLeft);
-    var overflowRight = (boxLeftRel + tipLeft + tipW) - vw;
-    if (overflowLeft > 0) { tipLeft = -boxLeftRel + 8; }
-    else if (overflowRight > 0) { tipLeft = boxRect.width - tipW - overflowRight + 8; }
-
-    // 垂直定位：优先上方，空间不够则下方
-    var gap = 10;
-    var aboveSpace = boxRect.top - gap;
-    var belowSpace = vh - boxRect.bottom - gap;
-
-    if (aboveSpace >= tipH + 6 || aboveSpace >= belowSpace) {
-      // 显示在上方
-      tip.style.top = -(tipH + gap) + 'px';
-      tip.classList.add('_dm_tip_above');
-    } else {
-      // 显示在下方
-      tip.style.top = (boxRect.height + gap) + 'px';
-      tip.classList.add('_dm_tip_below');
-    }
-
-    // 箭头水平位置：指向框中心
-    var arrow = tip.querySelector('._dm_desc_tip_arrow');
-    if (arrow) {
-      var arrowX = Math.max(6, Math.min(tipW - 12, tipW / 2 - tipLeft));
-      arrow.style.left = arrowX + 'px';
-    }
-
-    tip.style.left = tipLeft + 'px';
-    tip.style.visibility = '';
-  }
-
-  /** 隐藏 tooltip */
-  function hideTooltip(tip) {
-    if (!tip) return;
-    tip.classList.remove('_dm_tip_show', '_dm_tip_above', '_dm_tip_below');
-    tip.style.display = 'none';
-  }
-
   /** 检查标注所属 context 容器是否当前可见 */
   /** 从 context 字符串提取容器名（去掉 |tab 后缀） */
   function getContainerId(ctx) {
     if (!ctx || ctx === 'main') return 'main';
-    return ctx.split('|')[0]; // 'configOverlay|tab1' → 'configOverlay'
+    return ctx.split('|')[0]; // 'configOverlay|broker' → 'configOverlay'
   }
 
   /** 从 context 字符串提取 Tab 标识 */
@@ -1738,22 +1807,78 @@
   }
 
   /** 标注是否应该显示：
-   *  1. main 永远显示
+   *  1. main 永远显示（但检测到弹窗打开时隐藏）
    *  2. 容器不可见 → 隐藏
    *  3. 有Tab上下文但Tab不匹配 → 隐藏
-   *  4. 锚点元素或其祖先不可见 → 隐藏（防止跨Tab显示） */
+   *  4. 锚点元素自身不可见 → 隐藏 */
   function shouldShowAnnotation(a) {
     if (!a.context) a.context = 'main';
-    if (a.context === 'main') return true;
     if (!pageIframe || !pageIframe.contentDocument) return false;
     var doc = pageIframe.contentDocument;
+
+    // 0. 锚点元素可见性检查（所有context通用，优先判断）
+    //    防止锚点被 overflow 容器滚动到可视区域外后标注仍显示
+    if (a.xpath) {
+      var anchorEl = queryByAnchor(a, doc);
+      if (anchorEl) {
+        var elCs = doc.defaultView.getComputedStyle(anchorEl);
+        if (elCs.display === 'none' || elCs.visibility === 'hidden') return false;
+        // 检查所有祖先元素是否有 display:none（getComputedStyle 不继承 display 值）
+        var ancestor = anchorEl.parentElement;
+        while (ancestor && ancestor !== doc.body && ancestor !== doc.documentElement) {
+          var ancCs = doc.defaultView.getComputedStyle(ancestor);
+          if (ancCs.display === 'none' || ancCs.visibility === 'hidden') {
+            return false;
+          }
+          ancestor = ancestor.parentElement;
+        }
+        // 检查锚点是否被 overflow 容器滚动到可视区域外（如横向Tab栏滑动）
+        var ovCheck = anchorEl.parentElement;
+        while (ovCheck && ovCheck !== doc.body && ovCheck !== doc.documentElement) {
+          var ovCs = doc.defaultView.getComputedStyle(ovCheck);
+          if (/auto|scroll/.test(ovCs.overflow + '|' + ovCs.overflowX + '|' + ovCs.overflowY)) {
+            var containerRect = ovCheck.getBoundingClientRect();
+            var elRect = anchorEl.getBoundingClientRect();
+            if (elRect.right <= containerRect.left || elRect.left >= containerRect.right ||
+                elRect.bottom <= containerRect.top || elRect.top >= containerRect.bottom) {
+              return false;
+            }
+          }
+          ovCheck = ovCheck.parentElement;
+        }
+      }
+    }
+
+    // 1. 有弹窗/遮罩层打开 → 主页面标注临时隐藏，避免穿透弹窗
+    if (a.context === 'main') {
+      var anyOverlayOpen = false;
+      var knownOverlays = doc.querySelectorAll('[id]');
+      for (var oi = 0; oi < knownOverlays.length; oi++) {
+        var oid = knownOverlays[oi].id || '';
+        if (/overlay|modal|popup|dialog/i.test(oid)) {
+          var ocs = doc.defaultView.getComputedStyle(knownOverlays[oi]);
+          if (ocs.display !== 'none' && ocs.visibility !== 'hidden') {
+            if (parseInt(ocs.width) > 100 || parseInt(ocs.height) > 100) {
+              anyOverlayOpen = true; break;
+            }
+          }
+        }
+      }
+      if (anyOverlayOpen) return false;
+      return true;
+    }
 
     var containerId = getContainerId(a.context);
     var tabId = getTabId(a.context);
 
-    // 1. 容器可见性
+    // 1. 容器可见性（三重检查：offsetHeight + style.display + computedStyle）
     var container = findContainer(containerId);
     if (!container) return false;
+    if (container.offsetHeight === 0 && container.offsetWidth === 0) {
+      var cs0 = doc.defaultView.getComputedStyle(container);
+      if (cs0.display === 'none') return false;
+    }
+    if (container.style.display === 'none') return false;
     var cs = doc.defaultView.getComputedStyle(container);
     if (cs.display === 'none' || cs.visibility === 'hidden') return false;
 
@@ -1763,15 +1888,7 @@
       if (currentTabId && currentTabId !== tabId) return false;
     }
 
-    // 3. 锚点元素自身可见性检查（不检查祖先，XPath可能匹配到其他Tab中的同名元素）
-    if (a.xpath) {
-      var anchorEl = queryByAnchor(a, doc);
-      if (anchorEl) {
-        var elCs = doc.defaultView.getComputedStyle(anchorEl);
-        if (elCs.display === 'none' || elCs.visibility === 'hidden') return false;
-      }
-      // anchorEl 为 null 时也返回 true，用百分比兜底
-    }
+    // 3. 锚点元素显示状态检查（display/visibility 已在步骤0统一处理）
 
     return true;
   }
@@ -1788,8 +1905,9 @@
     var body = pageIframe.contentDocument.body;
     var box = document.createElement('div');
     box.className = '_dm_box';
-    box.id = '_dm_box_' + a.id;
+    box.id = '_dm_box_' + a._uid;  // 用内部 uid 作 DOM id，避免重复编号冲突
     box.setAttribute('data-id', a.id);
+    box.setAttribute('data-uid', a._uid);
     box.setAttribute('data-context', a.context);
     // 内联动画（只播一次，不会因父元素类变更重播）
     box.style.animation = '_dm_box_pop .25s ease';
@@ -1816,26 +1934,12 @@
       if (!annotateMode) return;
       e.stopPropagation();
       e.preventDefault();
-      changeAnnoId(a.id);
+      changeAnnoId(a._uid);
     });
     header.appendChild(num);
 
-    // 如果有说明文字，添加"说明"标签 + tooltip + 箭头
-    var tip = null;
-    if (annoDescriptions[a.id]) {
-      box.classList.add('has_desc');
-      var desc = document.createElement('div');
-      desc.className = '_dm_box_desc';
-      desc.textContent = '说明';
-      header.appendChild(desc);
-      tip = document.createElement('div');
-      tip.className = '_dm_desc_tip';
-      tip.textContent = annoDescriptions[a.id];
-      var arrow = document.createElement('div');
-      arrow.className = '_dm_desc_tip_arrow';
-      tip.appendChild(arrow);
-      header.appendChild(tip);
-    }
+    // 说明和 tooltip 已移除
+    
     box.appendChild(header);
 
     // 删除按钮（编辑模式可见）
@@ -1852,25 +1956,13 @@
       box.appendChild(h);
     });
 
-    // hover 事件：动态定位 tooltip
-    (function(t) {
-      if (!t) return;
-      box.addEventListener('mouseenter', function() {
-        if (annotateMode) return;
-        positionTooltip(box, t);
-        t.classList.add('_dm_tip_show');
-      });
-      box.addEventListener('mouseleave', function() {
-        hideTooltip(t);
-      });
-    })(tip);
+    // tooltip 已移除
 
     box.addEventListener('mousedown', function(e) {
-      if (isInside(e.target, '._dm_box_desc')) return;
       if (isInside(e.target, '._dm_box_del')) return;
       if (e.target && e.target.classList && e.target.classList.contains('_dm_box_num')) return;
       if (e.target && e.target.classList && e.target.classList.contains('_dm_box_handle')) return;
-      startDragBox(e, a.id);
+      startDragBox(e, a._uid);
     });
 
     // 非编辑模式下点击穿透：转发 click 到下层元素
@@ -1996,22 +2088,72 @@
     iframeRemoveEvent('mouseup', onResizeEnd);
   }
 
-  function findAnnoIndex(id) {
+  function findAnnoIndex(uid) {
     for (var i = 0; i < annotations.length; i++) {
-      if (annotations[i].id === id) return i;
+      if (annotations[i]._uid === uid) return i;
     }
     return -1;
   }
 
   /** 自定义弹窗（替代原生 prompt，兼容 webview 沙箱） */
   function showPromptDialog(title, defaultVal, callback) {
-    // 在 iframe 内创建 HTML 弹窗，支持 Enter/Escape/点击遮罩关闭
-    // ... (完整实现见 doc-mode.js)
+    try {
+      var doc = pageIframe.contentDocument;
+      if (!doc) { callback(null); return; }
+      // 遮罩
+      var overlay = doc.createElement('div');
+      overlay.id = '_dm_prompt_overlay';
+      overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.3);z-index:99999;display:flex;align-items:center;justify-content:center;';
+      // 对话框
+      var dlg = doc.createElement('div');
+      dlg.style.cssText = 'background:#fff;border-radius:8px;padding:20px 24px;min-width:260px;box-shadow:0 4px 20px rgba(0,0,0,0.2);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;';
+      // 标题
+      var h = doc.createElement('div');
+      h.style.cssText = 'font-size:14px;font-weight:600;color:#333;margin-bottom:12px;';
+      h.textContent = title;
+      dlg.appendChild(h);
+      // 输入框
+      var input = doc.createElement('input');
+      input.type = 'text';
+      input.value = String(defaultVal);
+      input.style.cssText = 'width:100%;padding:8px 10px;border:1px solid #d9d9d9;border-radius:4px;font-size:14px;outline:none;box-sizing:border-box;';
+      input.addEventListener('focus', function() { input.style.borderColor = '#19A65E'; });
+      input.addEventListener('blur', function() { input.style.borderColor = '#d9d9d9'; });
+      dlg.appendChild(input);
+      // 按钮栏
+      var btns = doc.createElement('div');
+      btns.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:14px;';
+      var cancelBtn = doc.createElement('button');
+      cancelBtn.textContent = '取消';
+      cancelBtn.style.cssText = 'padding:6px 16px;border:1px solid #d9d9d9;border-radius:4px;background:#fff;color:#666;cursor:pointer;font-size:13px;';
+      var okBtn = doc.createElement('button');
+      okBtn.textContent = '确定';
+      okBtn.style.cssText = 'padding:6px 16px;border:none;border-radius:4px;background:#19A65E;color:#fff;cursor:pointer;font-size:13px;';
+      btns.appendChild(cancelBtn);
+      btns.appendChild(okBtn);
+      dlg.appendChild(btns);
+      overlay.appendChild(dlg);
+      doc.body.appendChild(overlay);
+      // 聚焦并选中
+      setTimeout(function() { input.focus(); input.select(); }, 50);
+      function close(val) {
+        if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        callback(val);
+      }
+      cancelBtn.addEventListener('click', function() { close(null); });
+      okBtn.addEventListener('click', function() { close(input.value); });
+      input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' || e.keyCode === 13) { e.preventDefault(); close(input.value); }
+        if (e.key === 'Escape' || e.keyCode === 27) { e.preventDefault(); close(null); }
+      });
+      overlay.addEventListener('click', function(e) { if (e.target === overlay) close(null); });
+    } catch(e) { callback(null); }
   }
 
   /** 为标注分配内部唯一标识（不随编号修改变化） */
   function assignUid(a) {
     if (a._uid) {
+      // 已有 uid，同步计数器避免后续新建冲突
       var n = parseInt(a._uid.slice(1));
       if (!isNaN(n) && n > _dm_uid_counter) _dm_uid_counter = n;
     } else {
@@ -2029,6 +2171,7 @@
 
   /** 编辑模式下点击编号 → 修改显示编号（不影响其他标注） */
   function changeAnnoId(uid) {
+    // 找到对应标注
     var target = null;
     for (var i = 0; i < annotations.length; i++) {
       if (annotations[i]._uid === uid) { target = annotations[i]; break; }
@@ -2039,6 +2182,7 @@
       var newId = parseInt(newIdStr);
       if (isNaN(newId) || newId < 1) return;
       target.id = newId;
+      // 更新后续新增的默认编号
       annotateNextId = getMaxDisplayId() + 1;
       saveAnnotations();
       reRenderAllBoxes();
@@ -2055,64 +2199,15 @@
     if (annotations.length === 0) clearSavedAnnotations();
   }
 
-  /** 刷新所有标注框上的说明图标 */
-  function reRenderDescriptions() {
-    if (!pageIframe || !pageIframe.contentDocument) return;
-    var boxes = pageIframe.contentDocument.querySelectorAll('._dm_box');
-    boxes.forEach(function(box) {
-      var id = parseInt(box.getAttribute('data-id'));
-      var header = box.querySelector('._dm_box_header');
-      // 移除旧说明标签和 tip
-      var oldDesc = header ? header.querySelector('._dm_box_desc') : null;
-      var oldTip = header ? header.querySelector('._dm_desc_tip') : null;
-      if (oldDesc) oldDesc.parentNode.removeChild(oldDesc);
-      if (oldTip) oldTip.parentNode.removeChild(oldTip);
-      box.classList.remove('has_desc');
-
-      if (!header || isNaN(id) || !annoDescriptions[id]) return;
-
-      // 添加说明标签 + tooltip + 箭头 + 事件
-      box.classList.add('has_desc');
-      var desc = document.createElement('div');
-      desc.className = '_dm_box_desc';
-      desc.textContent = '说明';
-      header.appendChild(desc);
-      var tip = document.createElement('div');
-      tip.className = '_dm_desc_tip';
-      tip.textContent = annoDescriptions[id];
-      var arrow = document.createElement('div');
-      arrow.className = '_dm_desc_tip_arrow';
-      tip.appendChild(arrow);
-      header.appendChild(tip);
-
-      // 绑定 hover 事件（动态定位 tooltip）
-      (function(t) {
-        if (!t) return;
-        var enterFn = function() {
-          if (annotateMode) return;
-          positionTooltip(box, t);
-          t.classList.add('_dm_tip_show');
-        };
-        var leaveFn = function() { hideTooltip(t); };
-        // 先清除旧事件（通过克隆节点方式）
-        box.removeEventListener('mouseenter', enterFn);
-        box.removeEventListener('mouseleave', leaveFn);
-        box.addEventListener('mouseenter', enterFn);
-        box.addEventListener('mouseleave', leaveFn);
-      })(tip);
-    });
-  }
-
   function reRenderAllBoxes() {
     if (!pageIframe || !pageIframe.contentDocument) return;
     var body = pageIframe.contentDocument.body;
     var boxes = body.querySelectorAll('._dm_box');
     for (var i = 0; i < boxes.length; i++) boxes[i].parentNode.removeChild(boxes[i]);
 
-    annotateNextId = 1;
+    // 保留原始显示编号，不重新分配
     annotations.forEach(function(a) {
-      a.id = annotateNextId;
-      annotateNextId++;
+      assignUid(a);
       var pos = renderBox(a);
       // 同步更新像素值（百分比保持不变）
       if (pos) {
@@ -2122,6 +2217,8 @@
         a.h = pos.h;
       }
     });
+    // 更新后续新增的默认编号
+    annotateNextId = getMaxDisplayId() + 1;
     bindResizeHandlers();
   }
 
@@ -2134,9 +2231,9 @@
       if (!handle) return;
       var box = handle.closest('._dm_box');
       if (!box) return;
-      var id = parseInt(box.getAttribute('data-id'));
+      var uid = box.getAttribute('data-uid');
       var dir = handle.getAttribute('data-dir');
-      startResizeBox(e, id, dir);
+      startResizeBox(e, uid, dir);
     });
     body._resizeBound = true;
   }
@@ -2157,7 +2254,7 @@
     annotations.forEach(function(a) {
       ensurePct(a);
       if (!a.context) a.context = 'main';
-      var box = pageIframe.contentDocument.getElementById('_dm_box_' + a.id);
+      var box = pageIframe.contentDocument.getElementById('_dm_box_' + a._uid);
       if (box) {
         var pos = getBoxPosFromAnchor(a);
         var visible = shouldShowAnnotation(a);
@@ -2195,4 +2292,3 @@
   createDOM();
 
 })();
-
