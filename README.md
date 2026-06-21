@@ -17,12 +17,12 @@ npx skills add dae8888/pm-spec-skills --all
 1. 克隆或下载本仓库
 2. 将技能文件夹复制到你项目的 AI 技能目录中：
    ```
-   悬浮球文档模式/SKILL.md      ← 悬浮球文档模式
-   悬浮球文档模式/scripts/doc-mode.js  ← 配套 JS 引擎
-   页面说明技能/SKILL.md           ← 页面说明规范
-   页面说明检查技能/SKILL.md     ← 页面检查
-   总说明技能/SKILL.md        ← 总说明生成
-   总说明检查技能/SKILL.md  ← 总说明检查
+   pm-spec-doc-mode/SKILL.md      ← 悬浮球文档模式
+   pm-spec-doc-mode/scripts/doc-mode.js  ← 配套 JS 引擎
+   pm-spec-page/SKILL.md           ← 页面说明规范
+   pm-spec-page-check/SKILL.md     ← 页面检查
+   pm-spec-summary/SKILL.md        ← 总说明生成
+   pm-spec-summary-check/SKILL.md  ← 总说明检查
    ```
 3. 不同编辑器的技能目录不同，常见的有：
    - `.qoder/skills/`、`.claude/skills/`、`.cursor/skills/`
@@ -52,7 +52,7 @@ npx skills add dae8888/pm-spec-skills --all
 
 ## 悬浮球文档模式引擎文件
 
-`悬浮球文档模式/scripts/doc-mode.js` 是文档模式的完整 JS 引擎代码。部署时：
+`pm-spec-doc-mode/scripts/doc-mode.js` 是文档模式的完整 JS 引擎代码。部署时：
 
 1. 将 `scripts/doc-mode.js` 复制到目标项目的 `shared/doc-mode.js`
 2. 在目标 HTML 的 `</body>` 前注入引用：
@@ -65,17 +65,17 @@ npx skills add dae8888/pm-spec-skills --all
 
 ```
 pm-spec-skills/
-├── 悬浮球文档模式/
+├── pm-spec-doc-mode/
 │   ├── SKILL.md              # 悬浮球文档模式技能定义
 │   └── scripts/
 │       └── doc-mode.js       # 文档模式 JS 引擎（2198行）
-├── 页面说明技能/
+├── pm-spec-page/
 │   └── SKILL.md              # 页面说明编写规范
-├── 页面说明检查技能/
+├── pm-spec-page-check/
 │   └── SKILL.md              # 页面说明质量检查（10维度）
-├── 总说明技能/
+├── pm-spec-summary/
 │   └── SKILL.md              # 产品总说明生成
-├── 总说明检查技能/
+├── pm-spec-summary-check/
 │   └── SKILL.md              # 总说明交叉验证检查（8维度）
 └── README.md
 ```
